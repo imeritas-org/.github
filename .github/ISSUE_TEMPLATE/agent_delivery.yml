@@ -44,7 +44,7 @@ body:
     attributes:
       label: cc_plan_session_override (optional)
       description: "Advanced: override plan session/session-id. Leave blank for default."
-      placeholder: ""
+      placeholder: "(leave blank for default)"
     validations:
       required: false
 
@@ -53,7 +53,7 @@ body:
     attributes:
       label: cc_impl_session_override (optional)
       description: "Advanced: override implementation session/session-id. Leave blank for default."
-      placeholder: ""
+      placeholder: "(leave blank for default)"
     validations:
       required: false
 
@@ -63,8 +63,8 @@ body:
       label: Core Changes Allowed
       description: "Default is No. If Yes, agent may modify core framework paths for this issue."
       options:
-        - No
-        - Yes
+        - "No"
+        - "Yes"
       default: 0
     validations:
       required: true

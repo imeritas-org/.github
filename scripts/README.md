@@ -1,71 +1,56 @@
-<#
-.SYNOPSIS
-  Standardizes dev machine scratch/temp/caches on a chosen drive.
+# Dev Machine Scratch / Temp Setup (Windows)
 
-.DESCRIPTION
-  - Creates <Drive>:\Scratch\Temp, Cache, Build, Logs, Scripts
-  - Sets User + System TEMP/TMP -> <Drive>:\Scratch\Temp
-  - Sets NUGET_PACKAGES -> <Drive>:\Scratch\Cache\nuget
-  - Optionally sets PIP_CACHE_DIR and npm cache (if tools exist)
-  - Creates a cleanup script and a scheduled task to clean old temp files
+This folder contains a standard PowerShell setup script to move Windows temp files and common dev caches (NuGet, optionally npm/pip) to a dedicated `Scratch` folder on a non-OS drive.
 
-.PARAMETER ScratchDrive
-  Drive letter to host Scratch (e.g., D). Default: D
+**Repo/Org:** `imeritas-org/.github`  
+**Script:** `scripts/Setup-DevScratch.ps1`
 
-.PARAMETER TempRetentionDays
-  Delete scratch temp files older than N days. Default: 7
+---
 
-.PARAMETER TaskTime
-  Daily cleanup task time (HH:mm, 24-hour). Default: 03:15
+## What this does
 
-.PARAMETER ConfigureNpm
-  If set, configure npm cache to Scratch (only if npm is installed)
+When you run `Setup-DevScratch.ps1`, it will:
 
-.PARAMETER ConfigurePip
-  If set, configure pip cache dir env var to Scratch
+- Create a scratch layout on the selected drive (default: `D:`)
+  - `D:\Scratch\Temp`
+  - `D:\Scratch\Cache\nuget`
+  - `D:\Scratch\Cache\npm` (optional)
+  - `D:\Scratch\Cache\pip` (optional)
+  - `D:\Scratch\Build`
+  - `D:\Scratch\Logs`
+  - `D:\Scratch\Scripts`
+- Set **User + System** environment variables:
+  - `TEMP` and `TMP` → `D:\Scratch\Temp`
+- Set `NUGET_PACKAGES` (User) → `D:\Scratch\Cache\nuget`
+- Optionally set:
+  - `PIP_CACHE_DIR` → `D:\Scratch\Cache\pip`
+  - npm cache → `D:\Scratch\Cache\npm` (only if `npm` is installed)
+- Create a cleanup script:
+  - `D:\Scratch\Scripts\CleanScratchTemp.ps1`
+- Create a scheduled task:
+  - **Clean Scratch Temp** (daily) to delete files in `Scratch\Temp` older than the retention window (default: 7 days)
 
-.PARAMETER Force
-  If set, overwrites existing cleanup script and scheduled task if present.
+> **Important:** You should restart Windows (or sign out/in) after running so all apps pick up the new temp paths.
 
-.EXAMPLE
-  .\Setup-DevScratch.ps1 -ScratchDrive D -ConfigureNpm -ConfigurePip -Force
-#>
+---
 
-[CmdletBinding()]
-param(
-  [ValidatePattern("^[A-Za-z]$")]
-  [string]$ScratchDrive = "D",
+## Requirements
 
-  [ValidateRange(1,365)]
-  [int]$TempRetentionDays = 7,
+- Windows 10/11
+- PowerShell 5.1+ (PowerShell 7 also works)
+- **Run as Administrator** (required to set System `TEMP/TMP` and create scheduled task)
 
-  [ValidatePattern("^\d{2}:\d{2}$")]
-  [string]$TaskTime = "03:15",
+---
 
-  [switch]$ConfigureNpm,
-  [switch]$ConfigurePip,
-  [switch]$Force
-)
+## Quick start
 
-function Assert-Admin {
-  $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $principal = New-Object Security.Principal.WindowsPrincipal($currentIdentity)
-  if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw "Please run this script in an elevated PowerShell (Run as Administrator)."
-  }
-}
+1) Clone the repo (or copy the script to the machine)
 
-function Ensure-Dir([string]$Path) {
-  New-Item -ItemType Directory -Force -Path $Path | Out-Null
-}
+2) Run PowerShell **as Administrator** and execute:
 
-function Set-EnvVar([string]$Name, [string]$Value, [string]$Scope) {
-  [Environment]::SetEnvironmentVariable($Name, $Value, $Scope)
-}
-
-function Get-CommandExists([string]$Cmd) {
-  return [bool](Get-Command $Cmd -ErrorAction SilentlyContinue)
-}
+```powershell
+# Example: use D: as scratch, configure npm + pip caches, overwrite existing task/script if present
+.\scripts\Setup-DevScratch.ps1 -ScratchDrive D -ConfigureNpm -ConfigurePip -Force}
 
 Assert-Admin
 

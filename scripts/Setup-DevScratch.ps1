@@ -3,10 +3,12 @@
   Standardizes dev machine scratch/temp/caches on a chosen drive.
 
 .DESCRIPTION
-  - Creates <Drive>:\Scratch\Temp, Cache, Build, Logs, Scripts
+  - Creates <Drive>:\Scratch\Temp, Cache, Build, Logs, Scripts, Claude
   - Sets User + System TEMP/TMP -> <Drive>:\Scratch\Temp
   - Sets NUGET_PACKAGES -> <Drive>:\Scratch\Cache\nuget
   - Optionally sets PIP_CACHE_DIR and npm cache (if tools exist)
+  - Sets CLAUDE_CODE_TMPDIR -> <Drive>:\Scratch\Claude (User + System)
+  - Optionally creates a D:\tmp junction to Scratch Temp (useful if any tool hardcodes D:\tmp)
   - Creates a cleanup script and a scheduled task to clean old temp files
 
 .PARAMETER ScratchDrive
@@ -24,11 +26,17 @@
 .PARAMETER ConfigurePip
   If set, configure pip cache dir env var to Scratch
 
+.PARAMETER CleanClaudeTmp
+  If set, cleanup job also cleans <Drive>:\Scratch\Claude older than retention window
+
+.PARAMETER CreateTmpJunction
+  If set, creates a junction D:\tmp -> <Drive>:\Scratch\Temp (requires admin)
+
 .PARAMETER Force
   If set, overwrites existing cleanup script and scheduled task if present.
 
 .EXAMPLE
-  .\Setup-DevScratch.ps1 -ScratchDrive D -ConfigureNpm -ConfigurePip -Force
+  .\Setup-DevScratch.ps1 -ScratchDrive D -ConfigureNpm -ConfigurePip -CleanClaudeTmp -CreateTmpJunction -Force
 #>
 
 [CmdletBinding()]
@@ -44,6 +52,8 @@ param(
 
   [switch]$ConfigureNpm,
   [switch]$ConfigurePip,
+  [switch]$CleanClaudeTmp,
+  [switch]$CreateTmpJunction,
   [switch]$Force
 )
 
@@ -67,6 +77,29 @@ function Get-CommandExists([string]$Cmd) {
   return [bool](Get-Command $Cmd -ErrorAction SilentlyContinue)
 }
 
+function New-OrReplace-Junction {
+  param(
+    [Parameter(Mandatory=$true)][string]$LinkPath,
+    [Parameter(Mandatory=$true)][string]$TargetPath
+  )
+
+  if (Test-Path $LinkPath) {
+    $item = Get-Item $LinkPath -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+      # existing junction/symlink: remove it
+      Remove-Item $LinkPath -Force
+    } else {
+      # real folder/file: move aside
+      $backup = "${LinkPath}_old_$(Get-Date -Format yyyyMMdd_HHmmss)"
+      Rename-Item $LinkPath $backup
+      Write-Host "Moved existing $LinkPath -> $backup"
+    }
+  }
+
+  cmd /c "mklink /J `"$LinkPath`" `"$TargetPath`"" | Out-Null
+  Write-Host "Created junction: $LinkPath -> $TargetPath"
+}
+
 Assert-Admin
 
 $driveRoot = "$ScratchDrive`:\"
@@ -75,16 +108,17 @@ if (-not (Test-Path $driveRoot)) {
 }
 
 # Base paths
-$ScratchRoot  = Join-Path $driveRoot "Scratch"
-$TempPath     = Join-Path $ScratchRoot "Temp"
-$CacheRoot    = Join-Path $ScratchRoot "Cache"
-$BuildPath    = Join-Path $ScratchRoot "Build"
-$LogsPath     = Join-Path $ScratchRoot "Logs"
-$ScriptsPath  = Join-Path $ScratchRoot "Scripts"
+$ScratchRoot   = Join-Path $driveRoot "Scratch"
+$TempPath      = Join-Path $ScratchRoot "Temp"
+$CacheRoot     = Join-Path $ScratchRoot "Cache"
+$BuildPath     = Join-Path $ScratchRoot "Build"
+$LogsPath      = Join-Path $ScratchRoot "Logs"
+$ScriptsPath   = Join-Path $ScratchRoot "Scripts"
+$ClaudeTmpPath = Join-Path $ScratchRoot "Claude"
 
-$NugetCache   = Join-Path $CacheRoot "nuget"
-$NpmCache     = Join-Path $CacheRoot "npm"
-$PipCache     = Join-Path $CacheRoot "pip"
+$NugetCache    = Join-Path $CacheRoot "nuget"
+$NpmCache      = Join-Path $CacheRoot "npm"
+$PipCache      = Join-Path $CacheRoot "pip"
 
 # Create directories
 Ensure-Dir $TempPath
@@ -94,6 +128,7 @@ Ensure-Dir $LogsPath
 Ensure-Dir $ScriptsPath
 Ensure-Dir $NpmCache
 Ensure-Dir $PipCache
+Ensure-Dir $ClaudeTmpPath
 
 # Set TEMP/TMP (User + Machine)
 Set-EnvVar "TEMP" $TempPath "User"
@@ -118,19 +153,41 @@ if ($ConfigureNpm) {
   }
 }
 
+# Claude Code temp dir (User + Machine)
+Set-EnvVar "CLAUDE_CODE_TMPDIR" $ClaudeTmpPath "User"
+Set-EnvVar "CLAUDE_CODE_TMPDIR" $ClaudeTmpPath "Machine"
+
+# Optional: D:\tmp junction -> Scratch Temp (or Claude temp)
+if ($CreateTmpJunction) {
+  # If you'd rather have D:\tmp go to Claude temp, change $TempPath to $ClaudeTmpPath below.
+  New-OrReplace-Junction -LinkPath "D:\tmp" -TargetPath $TempPath
+}
+
 # Write cleanup script
 $cleanupScriptPath = Join-Path $ScriptsPath "CleanScratchTemp.ps1"
 
 $cleanupScript = @"
 `$TempPath = '$TempPath'
+`$ClaudeTmpPath = '$ClaudeTmpPath'
 `$Days = $TempRetentionDays
 
-if (Test-Path `$TempPath) {
-  Get-ChildItem -Path `$TempPath -Recurse -Force -ErrorAction SilentlyContinue |
-    Where-Object { `$_.LastWriteTime -lt (Get-Date).AddDays(-`$Days) } |
-    Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+function Clean-OlderThanDays([string]`$Path, [int]`$Days) {
+  if (Test-Path `$Path) {
+    Get-ChildItem -Path `$Path -Recurse -Force -ErrorAction SilentlyContinue |
+      Where-Object { `$_.LastWriteTime -lt (Get-Date).AddDays(-`$Days) } |
+      Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+  }
 }
+
+Clean-OlderThanDays -Path `$TempPath -Days `$Days
 "@
+
+if ($CleanClaudeTmp) {
+  $cleanupScript += @"
+
+Clean-OlderThanDays -Path `$ClaudeTmpPath -Days `$Days
+"@
+}
 
 if ((Test-Path $cleanupScriptPath) -and -not $Force) {
   Write-Warning "Cleanup script already exists: $cleanupScriptPath (use -Force to overwrite)"
@@ -158,12 +215,14 @@ if ($existing -and -not $Force) {
 
 Write-Host ""
 Write-Host "✅ Dev scratch setup complete"
-Write-Host "Scratch root:      $ScratchRoot"
-Write-Host "TEMP/TMP (User):   $([Environment]::GetEnvironmentVariable('TEMP','User'))"
-Write-Host "TEMP/TMP (Machine):$([Environment]::GetEnvironmentVariable('TEMP','Machine'))"
-Write-Host "NUGET_PACKAGES:    $([Environment]::GetEnvironmentVariable('NUGET_PACKAGES','User'))"
-if ($ConfigurePip) { Write-Host "PIP_CACHE_DIR:     $([Environment]::GetEnvironmentVariable('PIP_CACHE_DIR','User'))" }
-Write-Host "Cleanup script:    $cleanupScriptPath"
-Write-Host "Cleanup task:      $taskName @ $TaskTime daily"
+Write-Host "Scratch root:        $ScratchRoot"
+Write-Host "TEMP/TMP (User):     $([Environment]::GetEnvironmentVariable('TEMP','User'))"
+Write-Host "TEMP/TMP (Machine):  $([Environment]::GetEnvironmentVariable('TEMP','Machine'))"
+Write-Host "NUGET_PACKAGES:      $([Environment]::GetEnvironmentVariable('NUGET_PACKAGES','User'))"
+Write-Host "CLAUDE_CODE_TMPDIR:  $([Environment]::GetEnvironmentVariable('CLAUDE_CODE_TMPDIR','User'))"
+if ($ConfigurePip) { Write-Host "PIP_CACHE_DIR:       $([Environment]::GetEnvironmentVariable('PIP_CACHE_DIR','User'))" }
+Write-Host "Cleanup script:      $cleanupScriptPath"
+Write-Host "Cleanup task:        $taskName @ $TaskTime daily"
+if ($CreateTmpJunction) { Write-Host "D:\tmp junction:      D:\tmp -> $TempPath" }
 Write-Host ""
-Write-Host "➡️  Restart Windows (or sign out/in) so all apps pick up the new TEMP/TMP paths."
+Write-Host "➡️  Restart Windows (or sign out/in) so all apps pick up the new environment variables."
